@@ -9,7 +9,7 @@ Currently implemented authentication types are public-key and password.
 Maintainer: Paul Swartz
 """
 
-import struct, warnings
+import struct
 from twisted.conch import error, interfaces
 from twisted.conch.ssh import keys, transport, service
 from twisted.conch.ssh.common import NS, getNS
@@ -484,7 +484,7 @@ class SSHUserAuthClient(service.SSHService):
             byte partial success
 
         If partial success is C{True}, then the previous method succeeded but is
-        not sufficent for authentication. C{methods} is a comma-separated list
+        not sufficient for authentication. C{methods} is a comma-separated list
         of accepted authentication methods.
 
         We sort the list of methods by their position in C{self.preferredOrder},
@@ -676,12 +676,6 @@ class SSHUserAuthClient(service.SSHService):
 
 
     def _cbGetPublicKey(self, publicKey):
-        if isinstance(publicKey, str):
-            warnings.warn("Returning a string from "
-                          "SSHUserAuthClient.getPublicKey() is deprecated "
-                          "since Twisted 9.0.  Return a keys.Key() instead.",
-                          DeprecationWarning)
-            publicKey = keys.Key.fromString(publicKey)
         if not isinstance(publicKey, keys.Key): # failure or None
             publicKey = None
         if publicKey is not None:
@@ -770,12 +764,6 @@ class SSHUserAuthClient(service.SSHService):
         @return: the signature
         @rtype: C{str}
         """
-        if not isinstance(privateKey, keys.Key):
-            warnings.warn("Returning a PyCrypto key object from "
-                          "SSHUserAuthClient.getPrivateKey() is deprecated "
-                          "since Twisted 9.0.  Return a keys.Key() instead.",
-                          DeprecationWarning)
-            privateKey = keys.Key(privateKey)
         return privateKey.sign(signData)
 
 

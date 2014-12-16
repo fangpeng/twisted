@@ -26,18 +26,31 @@ from twisted.internet.error import ConnectionLost
 from twisted.internet.protocol import Protocol, Factory
 from twisted.internet.defer import Deferred, succeed, CancelledError
 from twisted.internet.endpoints import TCP4ClientEndpoint, SSL4ClientEndpoint
-from twisted.web.client import FileBodyProducer, Request, HTTPConnectionPool
-from twisted.web.client import _WebToNormalContextFactory, ResponseDone
-from twisted.web.client import WebClientContextFactory, _HTTP11ClientFactory
-from twisted.web.iweb import UNKNOWN_LENGTH, IAgent, IBodyProducer, IResponse
+
+from twisted.web.client import (FileBodyProducer, Request, HTTPConnectionPool,
+                                ResponseDone, _HTTP11ClientFactory, URI)
+
+from twisted.web.iweb import (
+    UNKNOWN_LENGTH, IAgent, IBodyProducer, IResponse, IAgentEndpointFactory,
+    )
 from twisted.web.http_headers import Headers
 from twisted.web._newclient import HTTP11ClientProtocol, Response
+
+from twisted.internet.interfaces import IOpenSSLClientConnectionCreator
+from zope.interface.declarations import implementer
+from twisted.web.iweb import IPolicyForHTTPS
+from twisted.python.deprecate import getDeprecationWarningString
+from twisted.python.versions import Version
+from twisted.web.client import BrowserLikePolicyForHTTPS
 from twisted.web.error import SchemeNotSupported
 
 try:
     from twisted.internet import ssl
-except:
+    from twisted.protocols.tls import TLSMemoryBIOFactory, TLSMemoryBIOProtocol
+except ImportError:
     ssl = None
+else:
+    from twisted.internet._sslverify import ClientTLSOptions
 
 
 
@@ -285,6 +298,21 @@ class FakeReactorAndConnectMixin:
     """
     Reactor = MemoryReactorClock
 
+    @implementer(IPolicyForHTTPS)
+    class StubPolicy(object):
+        """
+        A stub policy for HTTPS URIs which allows HTTPS tests to run even if
+        pyOpenSSL isn't installed.
+        """
+        def creatorForNetloc(self, hostname, port):
+            """
+            Don't actually do anything.
+
+            @param hostname: ignored
+
+            @param port: ignored
+            """
+
     class StubEndpoint(object):
         """
         Endpoint that wraps existing endpoint, substitutes StubHTTPProtocol, and
@@ -309,7 +337,7 @@ class FakeReactorAndConnectMixin:
         Return an Agent suitable for use in tests that wrap the Agent and want
         both a fake reactor and StubHTTPProtocol.
         """
-        agent = client.Agent(reactor)
+        agent = client.Agent(reactor, self.StubPolicy())
         _oldGetEndpoint = agent._getEndpoint
         agent._getEndpoint = lambda *args: (
             self.StubEndpoint(_oldGetEndpoint(*args), self))
@@ -681,6 +709,25 @@ class AgentTestsMixin(object):
 
 
 
+@implementer(IAgentEndpointFactory)
+class StubEndpointFactory(object):
+    """
+    A stub L{IAgentEndpointFactory} for use in testing.
+    """
+    def endpointForURI(self, uri):
+        """
+        Testing implementation.
+
+        @param uri: A L{URI}.
+
+        @return: C{(scheme, host, port)} of passed in URI; violation of
+            interface but useful for testing.
+        @rtype: L{tuple}
+        """
+        return (uri.scheme, uri.host, uri.port)
+
+
+
 class AgentTests(TestCase, FakeReactorAndConnectMixin, AgentTestsMixin):
     """
     Tests for the new HTTP client API provided by L{Agent}.
@@ -749,8 +796,8 @@ class AgentTests(TestCase, FakeReactorAndConnectMixin, AgentTestsMixin):
         """
         endpoint = DummyEndpoint()
         class MyAgent(client.Agent):
-            def _getEndpoint(this, scheme, host, port):
-                self.assertEqual((scheme, host, port),
+            def _getEndpoint(this, uri):
+                self.assertEqual((uri.scheme, uri.host, uri.port),
                                  ("http", "foo", 80))
                 return endpoint
 
@@ -807,7 +854,8 @@ class AgentTests(TestCase, FakeReactorAndConnectMixin, AgentTestsMixin):
         """
         expectedHost = 'example.com'
         expectedPort = 1234
-        endpoint = self.agent._getEndpoint('http', expectedHost, expectedPort)
+        endpoint = self.agent._getEndpoint(
+            URI.fromBytes(b'http://%s:%s/' % (expectedHost, expectedPort)))
         self.assertEqual(endpoint._host, expectedHost)
         self.assertEqual(endpoint._port, expectedPort)
         self.assertIsInstance(endpoint, TCP4ClientEndpoint)
@@ -832,7 +880,8 @@ class AgentTests(TestCase, FakeReactorAndConnectMixin, AgentTestsMixin):
                 return expectedContext
 
         agent = client.Agent(self.reactor, StubWebContextFactory())
-        endpoint = agent._getEndpoint('https', expectedHost, expectedPort)
+        endpoint = agent._getEndpoint(
+            URI.fromBytes(b'https://%s:%s/' % (expectedHost, expectedPort)))
         contextFactory = endpoint._sslContextFactory
         context = contextFactory.getContext()
         self.assertEqual(context, expectedContext)
@@ -978,7 +1027,7 @@ class AgentTests(TestCase, FakeReactorAndConnectMixin, AgentTestsMixin):
         L{Agent} takes a C{connectTimeout} argument which is forwarded to the
         following C{connectSSL} call.
         """
-        agent = client.Agent(self.reactor, connectTimeout=5)
+        agent = client.Agent(self.reactor, self.StubPolicy(), connectTimeout=5)
         agent.request('GET', 'https://foo/')
         timeout = self.reactor.sslClients.pop()[4]
         self.assertEqual(5, timeout)
@@ -1000,7 +1049,8 @@ class AgentTests(TestCase, FakeReactorAndConnectMixin, AgentTestsMixin):
         L{Agent} takes a C{bindAddress} argument which is forwarded to the
         following C{connectSSL} call.
         """
-        agent = client.Agent(self.reactor, bindAddress='192.168.0.1')
+        agent = client.Agent(self.reactor, self.StubPolicy(),
+                             bindAddress='192.168.0.1')
         agent.request('GET', 'https://foo/')
         address = self.reactor.sslClients.pop()[5]
         self.assertEqual('192.168.0.1', address)
@@ -1059,6 +1109,42 @@ class AgentTests(TestCase, FakeReactorAndConnectMixin, AgentTestsMixin):
         self.assertIdentical(request.absoluteURI, None)
 
 
+    def test_endpointFactory(self):
+        """
+        L{Agent.usingEndpointFactory} creates an L{Agent} that uses the given
+        factory to create endpoints.
+        """
+        factory = StubEndpointFactory()
+        agent = client.Agent.usingEndpointFactory(
+            None, endpointFactory=factory)
+        uri = URI.fromBytes(b'http://example.com/')
+        returnedEndpoint = agent._getEndpoint(uri)
+        self.assertEqual(returnedEndpoint, (b"http", b"example.com", 80))
+
+
+    def test_endpointFactoryDefaultPool(self):
+        """
+        If no pool is passed in to L{Agent.usingEndpointFactory}, a default
+        pool is constructed with no persistent connections.
+        """
+        agent = client.Agent.usingEndpointFactory(
+            self.reactor, StubEndpointFactory())
+        pool = agent._pool
+        self.assertEqual((pool.__class__, pool.persistent, pool._reactor),
+                          (HTTPConnectionPool, False, agent._reactor))
+
+
+    def test_endpointFactoryPool(self):
+        """
+        If a pool is passed in to L{Agent.usingEndpointFactory} it is used as
+        the L{Agent} pool.
+        """
+        pool = object()
+        agent = client.Agent.usingEndpointFactory(
+            self.reactor, StubEndpointFactory(), pool)
+        self.assertIs(pool, agent._pool)
+
+
 
 class AgentHTTPSTests(TestCase, FakeReactorAndConnectMixin):
     """
@@ -1082,7 +1168,8 @@ class AgentHTTPSTests(TestCase, FakeReactorAndConnectMixin):
         @return: An endpoint of an L{Agent} constructed according to args.
         @rtype: L{SSL4ClientEndpoint}
         """
-        return client.Agent(self.Reactor())._getEndpoint(b'https', host, port)
+        return client.Agent(self.Reactor())._getEndpoint(
+            URI.fromBytes(b'https://%s:%s/' % (host, port)))
 
 
     def test_endpointType(self):
@@ -1113,18 +1200,118 @@ class AgentHTTPSTests(TestCase, FakeReactorAndConnectMixin):
 
     def test_contextFactoryType(self):
         """
-        Ensure L{Agent} wraps correctly its context factory and uses modern
-        TLS APIs.
+        L{Agent} wraps its connection creator creator and uses modern TLS APIs.
         """
         endpoint = self.makeEndpoint()
-        self.assertIsInstance(endpoint._sslContextFactory,
-                              _WebToNormalContextFactory)
-        # Default context factory was used:
-        self.assertIsInstance(endpoint._sslContextFactory._webContext,
-                              WebClientContextFactory)
-        self.assertIsInstance(
-            endpoint._sslContextFactory._webContext._contextFactory,
-            ssl.CertificateOptions
+        contextFactory = endpoint._sslContextFactory
+        self.assertIsInstance(contextFactory, ClientTLSOptions)
+        self.assertEqual(contextFactory._hostname, u"example.com")
+
+
+    def test_connectHTTPSCustomConnectionCreator(self):
+        """
+        If a custom L{WebClientConnectionCreator}-like object is passed to
+        L{Agent.__init__} it will be used to determine the SSL parameters for
+        HTTPS requests.  When an HTTPS request is made, the hostname and port
+        number of the request URL will be passed to the connection creator's
+        C{creatorForNetloc} method.  The resulting context object will be used
+        to establish the SSL connection.
+        """
+        expectedHost = b'example.org'
+        expectedPort = 20443
+        class JustEnoughConnection(object):
+            handshakeStarted = False
+            connectState = False
+            def do_handshake(self):
+                """
+                The handshake started.  Record that fact.
+                """
+                self.handshakeStarted = True
+            def set_connect_state(self):
+                """
+                The connection started.  Record that fact.
+                """
+                self.connectState = True
+
+        contextArgs = []
+
+        @implementer(IOpenSSLClientConnectionCreator)
+        class JustEnoughCreator(object):
+            def __init__(self, hostname, port):
+                self.hostname = hostname
+                self.port = port
+
+            def clientConnectionForTLS(self, tlsProtocol):
+                """
+                Implement L{IOpenSSLClientConnectionCreator}.
+
+                @param tlsProtocol: The TLS protocol.
+                @type tlsProtocol: L{TLSMemoryBIOProtocol}
+
+                @return: C{expectedConnection}
+                """
+                contextArgs.append((tlsProtocol, self.hostname, self.port))
+                return expectedConnection
+
+        expectedConnection = JustEnoughConnection()
+        @implementer(IPolicyForHTTPS)
+        class StubBrowserLikePolicyForHTTPS(object):
+            def creatorForNetloc(self, hostname, port):
+                """
+                Emulate L{BrowserLikePolicyForHTTPS}.
+
+                @param hostname: The hostname to verify.
+                @type hostname: L{bytes}
+
+                @param port: The port number.
+                @type port: L{int}
+
+                @return: a stub L{IOpenSSLClientConnectionCreator}
+                @rtype: L{JustEnoughCreator}
+                """
+                return JustEnoughCreator(hostname, port)
+
+        expectedCreatorCreator = StubBrowserLikePolicyForHTTPS()
+        reactor = self.Reactor()
+        agent = client.Agent(reactor, expectedCreatorCreator)
+        endpoint = agent._getEndpoint(
+            URI.fromBytes(b'https://%s:%s/' %  (expectedHost, expectedPort)))
+        endpoint.connect(Factory.forProtocol(Protocol))
+        passedFactory = reactor.sslClients[-1][2]
+        passedContextFactory = reactor.sslClients[-1][3]
+        tlsFactory = TLSMemoryBIOFactory(
+            passedContextFactory, True, passedFactory
+        )
+        tlsProtocol = tlsFactory.buildProtocol(None)
+        tlsProtocol.makeConnection(StringTransport())
+        tls = contextArgs[0][0]
+        self.assertIsInstance(tls, TLSMemoryBIOProtocol)
+        self.assertEqual(contextArgs[0][1:], (expectedHost, expectedPort))
+        self.assertTrue(expectedConnection.handshakeStarted)
+        self.assertTrue(expectedConnection.connectState)
+
+
+    def test_deprecatedDuckPolicy(self):
+        """
+        Passing something that duck-types I{like} a L{web client context
+        factory <twisted.web.client.WebClientContextFactory>} - something that
+        does not provide L{IPolicyForHTTPS} - to L{Agent} emits a
+        L{DeprecationWarning} even if you don't actually C{import
+        WebClientContextFactory} to do it.
+        """
+        def warnMe():
+            client.Agent(MemoryReactorClock(),
+                         "does-not-provide-IPolicyForHTTPS")
+        warnMe()
+        warnings = self.flushWarnings([warnMe])
+        self.assertEqual(len(warnings), 1)
+        [warning] = warnings
+        self.assertEqual(warning['category'], DeprecationWarning)
+        self.assertEqual(
+            warning['message'],
+            "'does-not-provide-IPolicyForHTTPS' was passed as the HTTPS "
+            "policy for an Agent, but it does not provide IPolicyForHTTPS.  "
+            "Since Twisted 14.0, you must pass a provider of IPolicyForHTTPS."
         )
 
 
@@ -1132,8 +1319,38 @@ class AgentHTTPSTests(TestCase, FakeReactorAndConnectMixin):
 class WebClientContextFactoryTests(TestCase):
     """
     Tests for the context factory wrapper for web clients
-    L{WebClientContextFactory}.
+    L{twisted.web.client.WebClientContextFactory}.
     """
+
+    def setUp(self):
+        """
+        Get WebClientContextFactory while quashing its deprecation warning.
+        """
+        from twisted.web.client import WebClientContextFactory
+        self.warned = self.flushWarnings([WebClientContextFactoryTests.setUp])
+        self.webClientContextFactory = WebClientContextFactory
+
+
+    def test_deprecated(self):
+        """
+        L{twisted.web.client.WebClientContextFactory} is deprecated.  Importing
+        it displays a warning.
+        """
+        self.assertEqual(len(self.warned), 1)
+        [warning] = self.warned
+        self.assertEqual(warning['category'], DeprecationWarning)
+        self.assertEqual(
+            warning['message'],
+            getDeprecationWarningString(
+                self.webClientContextFactory, Version("Twisted", 14, 0, 0),
+                replacement=BrowserLikePolicyForHTTPS,
+            )
+
+            # See https://twistedmatrix.com/trac/ticket/7242
+            .replace(";", ":")
+        )
+
+
     def test_missingSSL(self):
         """
         If C{getContext} is called and SSL is not available, raise
@@ -1141,7 +1358,7 @@ class WebClientContextFactoryTests(TestCase):
         """
         self.assertRaises(
             NotImplementedError,
-            WebClientContextFactory().getContext,
+            self.webClientContextFactory().getContext,
             'example.com', 443,
         )
 
@@ -1150,12 +1367,25 @@ class WebClientContextFactoryTests(TestCase):
         """
         If SSL is present, C{getContext} returns a L{SSL.Context}.
         """
-        ctx = WebClientContextFactory().getContext('example.com', 443)
+        ctx = self.webClientContextFactory().getContext('example.com', 443)
         self.assertIsInstance(ctx, ssl.SSL.Context)
+
+
+    def test_setsTrustRootOnContextToDefaultTrustRoot(self):
+        """
+        The L{CertificateOptions} has C{trustRoot} set to the default trust
+        roots.
+        """
+        ctx = self.webClientContextFactory()
+        certificateOptions = ctx._getCertificateOptions('example.com', 443)
+        self.assertIsInstance(
+            certificateOptions.trustRoot, ssl.OpenSSLDefaultPaths)
 
 
     if ssl is None:
         test_returnsContext.skip = "SSL not present, cannot run SSL tests."
+        test_setsTrustRootOnContextToDefaultTrustRoot.skip = (
+            "SSL not present, cannot run SSL tests.")
     else:
         test_missingSSL.skip = "SSL present."
 
@@ -1725,10 +1955,10 @@ class ContentDecoderAgentTests(TestCase, FakeReactorAndConnectMixin,
         self.assertEqual(len(protocol.requests), 1)
         req, res = protocol.requests.pop()
         self.assertEqual(
-            list(req.headers.getAllRawHeaders()),
-            [('Host', ['example.com']),
+            list(sorted(req.headers.getAllRawHeaders())),
+            [('Accept-Encoding', ['fizz', 'decoder1,decoder2']),
              ('Foo', ['bar']),
-             ('Accept-Encoding', ['fizz', 'decoder1,decoder2'])])
+             ('Host', ['example.com'])])
 
 
     def test_plainEncodingResponse(self):
@@ -2468,35 +2698,62 @@ class BrowserLikeRedirectAgentTests(TestCase,
 
 
 
+class AbortableStringTransport(StringTransport):
+    """
+    A version of L{StringTransport} that supports C{abortConnection}.
+    """
+    # This should be replaced by a common version in #6530.
+    aborting = False
+
+
+    def abortConnection(self):
+        """
+        A testable version of the C{ITCPTransport.abortConnection} method.
+
+        Since this is a special case of closing the connection,
+        C{loseConnection} is also called.
+        """
+        self.aborting = True
+        self.loseConnection()
+
+
+
 class DummyResponse(object):
     """
-    Fake L{IResponse} for testing readBody that just captures the protocol
-    passed to deliverBody.
+    Fake L{IResponse} for testing readBody that captures the protocol passed to
+    deliverBody and uses it to make a connection with a transport.
 
     @ivar protocol: After C{deliverBody} is called, the protocol it was called
         with.
+
+    @ivar transport: An instance created by calling C{transportFactory} which
+        is used by L{DummyResponse.protocol} to make a connection.
     """
 
     code = 200
     phrase = "OK"
 
-    def __init__(self, headers=None):
+    def __init__(self, headers=None, transportFactory=AbortableStringTransport):
         """
         @param headers: The headers for this response.  If C{None}, an empty
             L{Headers} instance will be used.
         @type headers: L{Headers}
+
+        @param transportFactory: A callable used to construct the transport.
         """
         if headers is None:
             headers = Headers()
         self.headers = headers
+        self.transport = transportFactory()
 
 
     def deliverBody(self, protocol):
         """
-        Just record the given protocol without actually delivering anything to
-        it.
+        Record the given protocol and use it to make a connection with
+        L{DummyResponse.transport}.
         """
         self.protocol = protocol
+        self.protocol.makeConnection(self.transport)
 
 
 
@@ -2515,6 +2772,18 @@ class ReadBodyTests(TestCase):
         response.protocol.dataReceived("second")
         response.protocol.connectionLost(Failure(ResponseDone()))
         self.assertEqual(self.successResultOf(d), "firstsecond")
+
+
+    def test_cancel(self):
+        """
+        When cancelling the L{Deferred} returned by L{client.readBody}, the
+        connection to the server will be aborted.
+        """
+        response = DummyResponse()
+        deferred = client.readBody(response)
+        deferred.cancel()
+        self.failureResultOf(deferred, defer.CancelledError)
+        self.assertTrue(response.transport.aborting)
 
 
     def test_withPotentialDataLoss(self):
@@ -2556,3 +2825,20 @@ class ReadBodyTests(TestCase):
         reason = self.failureResultOf(d)
         reason.trap(ConnectionLost)
         self.assertEqual(reason.value.args, ("mystery problem",))
+
+
+    def test_deprecatedTransport(self):
+        """
+        Calling L{client.readBody} with a transport that does not implement
+        L{twisted.internet.interfaces.ITCPTransport} produces a deprecation
+        warning, but no exception when cancelling.
+        """
+        response = DummyResponse(transportFactory=StringTransport)
+        d = self.assertWarns(
+            DeprecationWarning,
+            'Using readBody with a transport that does not implement '
+            'ITCPTransport',
+            __file__,
+            lambda: client.readBody(response))
+        d.cancel()
+        self.failureResultOf(d, defer.CancelledError)

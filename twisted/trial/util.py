@@ -274,6 +274,7 @@ deprecate.deprecatedModuleAttribute(
 
 
 
+@defer.inlineCallbacks
 def _runSequentially(callables, stopOnFirstError=False):
     """
     Run the given callables one after the other. If a callable returns a
@@ -291,16 +292,14 @@ def _runSequentially(callables, stopOnFirstError=False):
     results = []
     for f in callables:
         d = defer.maybeDeferred(f)
-        thing = defer.waitForDeferred(d)
-        yield thing
         try:
-            results.append((defer.SUCCESS, thing.getResult()))
+            thing = yield d
+            results.append((defer.SUCCESS, thing))
         except:
             results.append((defer.FAILURE, Failure()))
             if stopOnFirstError:
                 break
-    yield results
-_runSequentially = defer.deferredGenerator(_runSequentially)
+    defer.returnValue(results)
 
 
 
@@ -364,7 +363,7 @@ def _unusedTestDirectory(base):
     @return: A two-tuple.  The first element is a L{FilePath} representing the
         directory which was found and created.  The second element is a locked
         L{FilesystemLock<twisted.python.lockfile.FilesystemLock>}.  Another
-        call to C{_unusedTestDirectory} will not be able to reused the the
+        call to C{_unusedTestDirectory} will not be able to reused the
         same name until the lock is released, either explicitly or by this
         process exiting.
     """

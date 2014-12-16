@@ -41,16 +41,17 @@ from twisted.trial import unittest
 from twisted.internet import defer
 from twisted.protocols import loopback
 from twisted.python import randbytes
-from twisted.python.reflect import qual, getClass
+from twisted.python.reflect import getClass
 from twisted.conch.ssh import address, service, common
 from twisted.test import proto_helpers
 
 from twisted.conch.error import ConchError
 
+
 class MockTransportBase(transport.SSHTransportBase):
     """
     A base class for the client and server protocols.  Stores the messages
-    it receieves instead of ignoring them.
+    it receives instead of ignoring them.
 
     @ivar errors: a list of tuples: (reasonCode, description)
     @ivar unimplementeds: a list of integers: sequence number
@@ -380,7 +381,7 @@ class TransportTestCase(unittest.TestCase):
 
 
 
-class BaseSSHTransportTestCase(TransportTestCase):
+class BaseSSHTransportTests(TransportTestCase):
     """
     Test TransportBase.  It implements the non-server/client specific
     parts of the SSH transport protocol.
@@ -1171,7 +1172,7 @@ class ServerAndClientSSHTransportBaseCase:
 
 
 
-class ServerSSHTransportTestCase(ServerAndClientSSHTransportBaseCase,
+class ServerSSHTransportTests(ServerAndClientSSHTransportBaseCase,
         TransportTestCase):
     """
     Tests for the SSHServerTransport.
@@ -1354,7 +1355,7 @@ class ServerSSHTransportTestCase(ServerAndClientSSHTransportBaseCase,
 
     def test_KEX_DH_GEX_REQUEST_OLD_badKexAlg(self):
         """
-        Test that if the server recieves a KEX_DH_GEX_REQUEST_OLD message
+        Test that if the server receives a KEX_DH_GEX_REQUEST_OLD message
         and the key exchange algorithm is not 'diffie-hellman-group1-sha1' or
         'diffie-hellman-group-exchange-sha1', we raise a ConchError.
         """
@@ -1516,7 +1517,7 @@ class ServerSSHTransportTestCase(ServerAndClientSSHTransportBaseCase,
 
 
 
-class ClientSSHTransportTestCase(ServerAndClientSSHTransportBaseCase,
+class ClientSSHTransportTests(ServerAndClientSSHTransportBaseCase,
         TransportTestCase):
     """
     Tests for SSHClientTransport.
@@ -1824,7 +1825,7 @@ class ClientSSHTransportTestCase(ServerAndClientSSHTransportBaseCase,
 
 
 
-class GetMACTestCase(unittest.TestCase):
+class GetMACTests(unittest.TestCase):
     """
     Tests for L{SSHCiphers._getMAC}.
     """
@@ -1882,7 +1883,7 @@ class GetMACTestCase(unittest.TestCase):
 
 
 
-class SSHCiphersTestCase(unittest.TestCase):
+class SSHCiphersTests(unittest.TestCase):
     """
     Tests for the SSHCiphers helper class.
     """
@@ -1993,7 +1994,7 @@ class SSHCiphersTestCase(unittest.TestCase):
 
 
 
-class CounterTestCase(unittest.TestCase):
+class CounterTests(unittest.TestCase):
     """
     Tests for the _Counter helper class.
     """
@@ -2022,7 +2023,7 @@ class CounterTestCase(unittest.TestCase):
 
 
 
-class TransportLoopbackTestCase(unittest.TestCase):
+class TransportLoopbackTests(unittest.TestCase):
     """
     Test the server transport and client transport against each other,
     """
@@ -2133,7 +2134,7 @@ class TransportLoopbackTestCase(unittest.TestCase):
         return defer.DeferredList(deferreds, fireOnOneErrback=True)
 
 
-class RandomNumberTestCase(unittest.TestCase):
+class RandomNumberTests(unittest.TestCase):
     """
     Tests for the random number generator L{_getRandomNumber} and private
     key generator L{_generateX}.
@@ -2192,81 +2193,3 @@ class RandomNumberTestCase(unittest.TestCase):
         self.assertEqual(
             transport._generateX(random, 8),
             64)
-
-
-
-class OldFactoryTestCase(unittest.TestCase):
-    """
-    The old C{SSHFactory.getPublicKeys}() returned mappings of key names to
-    strings of key blobs and mappings of key names to PyCrypto key objects from
-    C{SSHFactory.getPrivateKeys}() (they could also be specified with the
-    C{publicKeys} and C{privateKeys} attributes).  This is no longer supported
-    by the C{SSHServerTransport}, so we warn the user if they create an old
-    factory.
-    """
-    if dependencySkip:
-        skip = dependencySkip
-
-    def test_getPublicKeysWarning(self):
-        """
-        If the return value of C{getPublicKeys}() isn't a mapping from key
-        names to C{Key} objects, then warn the user and convert the mapping.
-        """
-        sshFactory = MockOldFactoryPublicKeys()
-        self.assertWarns(DeprecationWarning,
-                "Returning a mapping from strings to strings from"
-                " getPublicKeys()/publicKeys (in %s) is deprecated.  Return "
-                "a mapping from strings to Key objects instead." %
-                (qual(MockOldFactoryPublicKeys),),
-                factory.__file__, sshFactory.startFactory)
-        self.assertEqual(sshFactory.publicKeys, MockFactory().getPublicKeys())
-
-
-    def test_getPrivateKeysWarning(self):
-        """
-        If the return value of C{getPrivateKeys}() isn't a mapping from key
-        names to C{Key} objects, then warn the user and convert the mapping.
-        """
-        sshFactory = MockOldFactoryPrivateKeys()
-        self.assertWarns(DeprecationWarning,
-                "Returning a mapping from strings to PyCrypto key objects from"
-                " getPrivateKeys()/privateKeys (in %s) is deprecated.  Return"
-                " a mapping from strings to Key objects instead." %
-                (qual(MockOldFactoryPrivateKeys),),
-                factory.__file__, sshFactory.startFactory)
-        self.assertEqual(sshFactory.privateKeys,
-                          MockFactory().getPrivateKeys())
-
-
-    def test_publicKeysWarning(self):
-        """
-        If the value of the C{publicKeys} attribute isn't a mapping from key
-        names to C{Key} objects, then warn the user and convert the mapping.
-        """
-        sshFactory = MockOldFactoryPublicKeys()
-        sshFactory.publicKeys = sshFactory.getPublicKeys()
-        self.assertWarns(DeprecationWarning,
-                "Returning a mapping from strings to strings from"
-                " getPublicKeys()/publicKeys (in %s) is deprecated.  Return "
-                "a mapping from strings to Key objects instead." %
-                (qual(MockOldFactoryPublicKeys),),
-                factory.__file__, sshFactory.startFactory)
-        self.assertEqual(sshFactory.publicKeys, MockFactory().getPublicKeys())
-
-
-    def test_privateKeysWarning(self):
-        """
-        If the return value of C{privateKeys} attribute isn't a mapping from
-        key names to C{Key} objects, then warn the user and convert the
-        mapping.
-        """
-        sshFactory = MockOldFactoryPrivateKeys()
-        sshFactory.privateKeys = sshFactory.getPrivateKeys()
-        self.assertWarns(DeprecationWarning,
-                "Returning a mapping from strings to PyCrypto key objects from"
-                " getPrivateKeys()/privateKeys (in %s) is deprecated.  Return"
-                " a mapping from strings to Key objects instead." %
-                (qual(MockOldFactoryPrivateKeys),),
-                factory.__file__, sshFactory.startFactory)
-        self.assertEqual(sshFactory.privateKeys,
-                          MockFactory().getPrivateKeys())

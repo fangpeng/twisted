@@ -23,7 +23,7 @@ from twisted.python.util import spewer
 from twisted.trial import runner, itrial, reporter
 
 
-# Yea, this is stupid.  Leave it for for command-line compatibility for a
+# Yea, this is stupid.  Leave it for command-line compatibility for a
 # while, though.
 TBFORMAT_MAP = {
     'plain': 'default',
@@ -599,8 +599,8 @@ def run():
     config = Options()
     try:
         config.parseOptions()
-    except usage.error, ue:
-        raise SystemExit, "%s: %s" % (sys.argv[0], ue)
+    except usage.error as ue:
+        raise SystemExit("%s: %s" % (sys.argv[0], ue))
     _initialDebugSetup(config)
 
     try:

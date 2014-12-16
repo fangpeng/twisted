@@ -27,7 +27,8 @@ from functools import wraps
 # Twisted imports
 from twisted.python.compat import cmp, comparable
 from twisted.python import lockfile, log, failure
-from twisted.python.deprecate import warnAboutFunction
+from twisted.python.deprecate import warnAboutFunction, deprecated
+from twisted.python.versions import Version
 
 
 
@@ -920,6 +921,11 @@ class waitForDeferred:
     """
 
     def __init__(self, d):
+        warnings.warn(
+            "twisted.internet.defer.waitForDeferred was deprecated in "
+            "Twisted 14.1.0; please use twisted.internet.defer.inlineCallbacks "
+            "instead", DeprecationWarning, stacklevel=2)
+
         if not isinstance(d, Deferred):
             raise TypeError("You must give waitForDeferred a Deferred. You gave it %r." % (d,))
         self.d = d
@@ -988,6 +994,8 @@ def _deferGenerator(g, deferred):
 
 
 
+@deprecated(Version('Twisted', 14, 1, 0),
+            "twisted.internet.defer.inlineCallbacks")
 def deferredGenerator(f):
     """
     L{deferredGenerator} and L{waitForDeferred} help you write
@@ -1097,9 +1105,9 @@ def _inlineCallbacks(result, g, deferred):
                 result = result.throwExceptionIntoGenerator(g)
             else:
                 result = g.send(result)
-        except StopIteration:
+        except StopIteration as e:
             # fell off the end, or "return" statement
-            deferred.callback(None)
+            deferred.callback(getattr(e, "value", None))
             return deferred
         except _DefGen_Return as e:
             # returnValue() was called; time to give a result to the original
@@ -1181,7 +1189,7 @@ def inlineCallbacks(f):
     inlineCallbacks helps you write L{Deferred}-using code that looks like a
     regular sequential function. For example::
 
-        @inlineCallBacks
+        @inlineCallbacks
         def thingummy():
             thing = yield makeSomeRequestResultingInDeferred()
             print(thing)  # the result! hoorj!
@@ -1221,6 +1229,14 @@ def inlineCallbacks(f):
             else:
                 # will trigger an errback
                 raise Exception('DESTROY ALL LIFE')
+
+    If you are using Python 3.3 or later, it is possible to use the C{return}
+    statement instead of L{returnValue}::
+
+        @inlineCallbacks
+        def loadData(url):
+            response = yield makeRequest(url)
+            return json.loads(respoonse)
     """
     @wraps(f)
     def unwindGenerator(*args, **kwargs):
@@ -1522,7 +1538,7 @@ class DeferredFilesystemLock(lockfile.FilesystemLock):
     @ivar _interval: The retry interval for an L{IReactorTime} based scheduler.
 
     @ivar _tryLockCall: A L{DelayedCall} based on C{_interval} that will manage
-        the next retry for aquiring the lock.
+        the next retry for acquiring the lock.
 
     @ivar _timeoutCall: A L{DelayedCall} based on C{deferUntilLocked}'s timeout
         argument.  This is in charge of timing out our attempt to acquire the
@@ -1598,7 +1614,7 @@ class DeferredFilesystemLock(lockfile.FilesystemLock):
             else:
                 if timeout is not None and self._timeoutCall is None:
                     reason = failure.Failure(TimeoutError(
-                        "Timed out aquiring lock: %s after %fs" % (
+                        "Timed out acquiring lock: %s after %fs" % (
                             self.name,
                             timeout)))
                     self._timeoutCall = self._scheduler.callLater(

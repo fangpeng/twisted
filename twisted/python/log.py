@@ -18,7 +18,7 @@ from zope.interface import Interface
 
 from twisted.python.compat import unicode, _PY3
 from twisted.python import context
-from twisted.python import _reflectpy3 as reflect
+from twisted.python import reflect
 from twisted.python import util
 from twisted.python import failure
 from twisted.python.threadable import synchronize
@@ -75,7 +75,7 @@ def callWithContext(ctx, func, *args, **kw):
 def callWithLogger(logger, func, *args, **kw):
     """
     Utility method which wraps a function in a try:/except:, logs a failure if
-    one occurrs, and uses the system's logPrefix.
+    one occurs, and uses the system's logPrefix.
     """
     try:
         lp = logger.logPrefix()

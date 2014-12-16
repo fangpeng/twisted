@@ -16,7 +16,7 @@ import time
 from zope.interface import implementer
 
 from twisted.python import log
-from twisted.python import _reflectpy3 as reflect
+from twisted.python import reflect
 from twisted.python.failure import Failure
 
 from twisted.internet import base, defer
@@ -738,7 +738,7 @@ class Clock:
     def seconds(self):
         """
         Pretend to be time.time().  This is used internally when an operation
-        such as L{IDelayedCall.reset} needs to determine a a time value
+        such as L{IDelayedCall.reset} needs to determine a time value
         relative to the current time.
 
         @rtype: C{float}

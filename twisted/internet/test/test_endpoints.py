@@ -13,7 +13,7 @@ import socket
 from errno import EPERM
 from socket import AF_INET, AF_INET6, SOCK_STREAM, IPPROTO_TCP
 from zope.interface import implementer
-from zope.interface.verify import verifyObject
+from zope.interface.verify import verifyObject, verifyClass
 
 from twisted.python.compat import _PY3
 from twisted.trial import unittest
@@ -26,12 +26,16 @@ from twisted.test.proto_helpers import RaisingMemoryReactor, StringTransport
 from twisted.python.failure import Failure
 from twisted.python.systemd import ListenFDs
 from twisted.python.filepath import FilePath
-from twisted.python.runtime import platform
 from twisted.python import log
-from twisted.protocols import basic
+
 from twisted.internet.task import Clock
 from twisted.test.proto_helpers import (MemoryReactorClock as MemoryReactor)
 from twisted.test import __file__ as testInitPath
+from twisted.internet.interfaces import IConsumer, IPushProducer
+from twisted.test.proto_helpers import StringTransportWithDisconnection
+from twisted.internet.interfaces import ITransport
+from twisted.internet.protocol import Factory
+
 pemPath = FilePath(testInitPath.encode("utf-8")).sibling(b"server.pem")
 
 if not _PY3:
@@ -54,7 +58,9 @@ try:
     from twisted.internet.ssl import PrivateCertificate, Certificate
     from twisted.internet.ssl import CertificateOptions, KeyPair
     from twisted.internet.ssl import DiffieHellmanParameters
-    from OpenSSL.SSL import ContextType, SSLv23_METHOD, TLSv1_METHOD
+    from OpenSSL.SSL import (
+        ContextType, SSLv23_METHOD, TLSv1_METHOD, OP_NO_SSLv3
+    )
     testCertificate = Certificate.loadPEM(pemPath.getContent())
     testPrivateCertificate = PrivateCertificate.loadPEM(pemPath.getContent())
 
@@ -151,6 +157,15 @@ class TestFactory(ClientFactory):
 
 
 
+class NoneFactory(ClientFactory):
+    """
+    A one off factory whose C{buildProtocol} returns C{None}.
+    """
+    def buildProtocol(self, addr):
+        return None
+
+
+
 class WrappingFactoryTests(unittest.TestCase):
     """
     Test the behaviour of our ugly implementation detail C{_WrappingFactory}.
@@ -201,6 +216,28 @@ class WrappingFactoryTests(unittest.TestCase):
             ("My protocol is poorly defined.",)))
 
         return d
+
+
+    def test_buildNoneProtocol(self):
+        """
+        If the wrapped factory's C{buildProtocol} returns C{None} the
+        C{onConnection} errback fires with L{error.NoProtocol}.
+        """
+        wrappingFactory = endpoints._WrappingFactory(NoneFactory())
+        wrappingFactory.buildProtocol(None)
+        self.failureResultOf(wrappingFactory._onConnection, error.NoProtocol)
+
+
+    def test_buildProtocolReturnsNone(self):
+        """
+        If the wrapped factory's C{buildProtocol} returns C{None} then
+        L{endpoints._WrappingFactory.buildProtocol} returns C{None}.
+        """
+        wrappingFactory = endpoints._WrappingFactory(NoneFactory())
+        # Discard the failure this Deferred will get
+        wrappingFactory._onConnection.addErrback(lambda reason: None)
+
+        self.assertIs(None, wrappingFactory.buildProtocol(None))
 
 
     def test_logPrefixPassthrough(self):
@@ -613,8 +650,39 @@ class EndpointTestCaseMixin(ServerEndpointTestCaseMixin,
 
 
 
-class StdioFactory(protocol.Factory):
-    protocol = basic.LineReceiver
+class SpecificFactory(Factory):
+    """
+    An L{IProtocolFactory} whose C{buildProtocol} always returns its
+    C{specificProtocol} and sets C{passedAddress}.
+
+    Raising an exception if C{specificProtocol} has already been used.
+    """
+    def __init__(self, specificProtocol):
+        self.specificProtocol = specificProtocol
+
+
+    def buildProtocol(self, addr):
+        if hasattr(self.specificProtocol, 'passedAddress'):
+            raise ValueError("specificProtocol already used.")
+        self.specificProtocol.passedAddress = addr
+        return self.specificProtocol
+
+
+
+class FakeStdio(object):
+    """
+    A L{stdio.StandardIO} like object that simply captures its constructor
+    arguments.
+    """
+    def __init__(self, protocolInstance, reactor=None):
+        """
+        @param protocolInstance: like the first argument of L{stdio.StandardIO}
+
+        @param reactor: like the reactor keyword argument of
+            L{stdio.StandardIO}
+        """
+        self.protocolInstance = protocolInstance
+        self.reactor = reactor
 
 
 
@@ -622,88 +690,43 @@ class StandardIOEndpointsTestCase(unittest.TestCase):
     """
     Tests for Standard I/O Endpoints
     """
+
     def setUp(self):
-        self.ep = endpoints.StandardIOEndpoint(reactor)
-
-
-    def test_standardIOInstance(self):
         """
-        The endpoint creates an L{endpoints.StandardIO} instance.
+        Construct a L{StandardIOEndpoint} with a dummy reactor and a fake
+        L{stdio.StandardIO} like object.  Listening on it with a
+        L{SpecificFactory}.
         """
-        d = self.ep.listen(StdioFactory())
+        self.reactor = object()
+        endpoint = endpoints.StandardIOEndpoint(self.reactor)
+        self.assertIdentical(endpoint._stdio, stdio.StandardIO)
 
-        def checkInstanceAndLoseConnection(stdioOb):
-            self.assertIsInstance(stdioOb, stdio.StandardIO)
-            stdioOb.loseConnection()
+        endpoint._stdio = FakeStdio
+        self.specificProtocol = Protocol()
 
-        return d.addCallback(checkInstanceAndLoseConnection)
+        self.fakeStdio = self.successResultOf(
+            endpoint.listen(SpecificFactory(self.specificProtocol))
+        )
 
 
-    def test_reactor(self):
+    def test_protocolCreation(self):
         """
-        The reactor passed to the endpoint is set as its _reactor attribute.
+        L{StandardIOEndpoint} returns a L{Deferred} that fires with an instance
+        of a L{stdio.StandardIO} like object that was passed the result of
+        L{SpecificFactory.buildProtocol} which was passed a L{PipeAddress}.
         """
-        self.assertEqual(self.ep._reactor, reactor)
+        self.assertIdentical(self.fakeStdio.protocolInstance,
+                             self.specificProtocol)
+        self.assertIsInstance(self.fakeStdio.protocolInstance.passedAddress,
+                              PipeAddress)
 
 
-    def test_protocol(self):
+    def test_passedReactor(self):
         """
-        The protocol used in the endpoint is a L{basic.LineReceiver} instance.
+        L{StandardIOEndpoint} passes its C{reactor} argument to the constructor
+        of its L{stdio.StandardIO} like object.
         """
-        d = self.ep.listen(StdioFactory())
-
-        def checkProtocol(stdioOb):
-            from twisted.python.runtime import platform
-            if platform.isWindows():
-                self.assertIsInstance(stdioOb.proto, basic.LineReceiver)
-            else:
-                self.assertIsInstance(stdioOb.protocol, basic.LineReceiver)
-            stdioOb.loseConnection()
-
-        return d.addCallback(checkProtocol)
-
-
-    def test_address(self):
-        """
-        The address passed to the factory's buildProtocol in the endpoint
-        is a PipeAddress instance.
-        """
-        class TestAddrFactory(protocol.Factory):
-            protocol = basic.LineReceiver
-            address = None
-
-            def buildProtocol(self, addr):
-                self.address = addr
-                p = self.protocol()
-                p.factory = self
-                return p
-
-        myFactory = TestAddrFactory()
-        d = self.ep.listen(myFactory)
-
-        def checkAddress(stdioOb):
-            self.assertIsInstance(myFactory.address, PipeAddress)
-            stdioOb.loseConnection()
-
-        return d.addCallback(checkAddress)
-
-
-    def test_StdioIOReceivesCorrectReactor(self):
-        """
-        The reactor passed to the endpoint is the one that the readers are
-        added to.
-        """
-        reactor = MemoryReactor()
-        ep = endpoints.StandardIOEndpoint(reactor)
-        d = ep.listen(StdioFactory())
-
-        def checkReaders(stdioOb):
-            if platform.isWindows():
-                self.assertEqual(stdioOb.reactor, reactor)
-            else:
-                self.assertIn(stdioOb._reader, reactor.getReaders())
-
-        return d.addCallback(checkReaders)
+        self.assertIdentical(self.fakeStdio.reactor, self.reactor)
 
 
 
@@ -728,35 +751,49 @@ class StubApplicationProtocol(protocol.Protocol):
 
 
 @implementer(interfaces.IProcessTransport)
-class MemoryProcessTransport(object):
+class MemoryProcessTransport(StringTransportWithDisconnection, object):
     """
     A fake L{IProcessTransport} provider to be used in tests.
-
-    @ivar dataList: A list to which data is appended in writeToChild. Acts as
-        the child's stdin for testing.
     """
 
-    def __init__(self):
-        self.dataList = []
-        self.host = _ProcessAddress()
-        self.peer = _ProcessAddress()
+    def __init__(self, protocol=None):
+        super(MemoryProcessTransport, self).__init__(
+            hostAddress=_ProcessAddress(),
+            peerAddress=_ProcessAddress())
+        self.signals = []
+        self.closedChildFDs = set()
+        self.protocol = Protocol()
 
 
     def writeToChild(self, childFD, data):
         if childFD == 0:
-            self.dataList.append(data)
+            self.write(data)
 
 
-    def loseConnection(self):
-        self.loseConnectionFlag = True
+    def closeStdin(self):
+        self.closeChildFD(0)
 
 
-    def getPeer(self):
-        return self.peer
+    def closeStdout(self):
+        self.closeChildFD(1)
 
 
-    def getHost(self):
-        return self.host
+    def closeStderr(self):
+        self.closeChildFD(2)
+
+
+    def closeChildFD(self, fd):
+        self.closedChildFDs.add(fd)
+
+
+    def signalProcess(self, signal):
+        self.signals.append(signal)
+
+
+
+verifyClass(interfaces.IConsumer, MemoryProcessTransport)
+verifyClass(interfaces.IPushProducer, MemoryProcessTransport)
+verifyClass(interfaces.IProcessTransport, MemoryProcessTransport)
 
 
 
@@ -781,7 +818,7 @@ class MemoryProcessReactor(object):
         self.usePTY = usePTY
         self.childFDs = childFDs
 
-        self.processTransport = object()
+        self.processTransport = MemoryProcessTransport()
         self.processProtocol.makeConnection(self.processTransport)
         return self.processTransport
 
@@ -931,9 +968,35 @@ class ProcessEndpointTransportTests(unittest.TestCase):
     """
 
     def setUp(self):
-        self.process = MemoryProcessTransport()
-        self.endpointTransport = endpoints._ProcessEndpointTransport(
-            self.process)
+        self.reactor = MemoryProcessReactor()
+        self.endpoint = endpoints.ProcessEndpoint(self.reactor,
+                                                  '/bin/executable')
+        protocol = self.successResultOf(
+            self.endpoint.connect(Factory.forProtocol(Protocol))
+        )
+        self.process = self.reactor.processTransport
+        self.endpointTransport = protocol.transport
+
+
+    def test_verifyConsumer(self):
+        """
+        L{_ProcessEndpointTransport}s provide L{IConsumer}.
+        """
+        verifyObject(IConsumer, self.endpointTransport)
+
+
+    def test_verifyProducer(self):
+        """
+        L{_ProcessEndpointTransport}s provide L{IPushProducer}.
+        """
+        verifyObject(IPushProducer, self.endpointTransport)
+
+
+    def test_verifyTransport(self):
+        """
+        L{_ProcessEndpointTransport}s provide L{ITransport}.
+        """
+        verifyObject(ITransport, self.endpointTransport)
 
 
     def test_constructor(self):
@@ -941,7 +1004,69 @@ class ProcessEndpointTransportTests(unittest.TestCase):
         The L{_ProcessEndpointTransport} instance stores the process passed to
         it.
         """
-        self.assertEqual(self.endpointTransport._process, self.process)
+        self.assertIdentical(self.endpointTransport._process, self.process)
+
+
+    def test_registerProducer(self):
+        """
+        Registering a producer with the endpoint transport registers it with
+        the underlying process transport.
+        """
+        @implementer(IPushProducer)
+        class AProducer(object):
+            pass
+        aProducer = AProducer()
+        self.endpointTransport.registerProducer(aProducer, False)
+        self.assertIdentical(self.process.producer, aProducer)
+
+
+    def test_pauseProducing(self):
+        """
+        Pausing the endpoint transport pauses the underlying process transport.
+        """
+        self.endpointTransport.pauseProducing()
+        self.assertEqual(self.process.producerState, 'paused')
+
+
+    def test_resumeProducing(self):
+        """
+        Resuming the endpoint transport resumes the underlying process
+        transport.
+        """
+        self.test_pauseProducing()
+        self.endpointTransport.resumeProducing()
+        self.assertEqual(self.process.producerState, 'producing')
+
+
+    def test_stopProducing(self):
+        """
+        Stopping the endpoint transport as a producer stops the underlying
+        process transport.
+        """
+        self.endpointTransport.stopProducing()
+        self.assertEqual(self.process.producerState, 'stopped')
+
+
+    def test_unregisterProducer(self):
+        """
+        Unregistring the endpoint transport's producer unregisters the
+        underlying process transport's producer.
+        """
+        self.test_registerProducer()
+        self.endpointTransport.unregisterProducer()
+        self.assertIdentical(self.process.producer, None)
+
+
+    def test_extraneousAttributes(self):
+        """
+        L{endpoints._ProcessEndpointTransport} filters out extraneous
+        attributes of its underlying transport, to present a more consistent
+        cross-platform view of subprocesses and prevent accidental
+        dependencies.
+        """
+        self.process.pipes = []
+        self.assertRaises(AttributeError,
+                          getattr, self.endpointTransport, 'pipes')
 
 
     def test_writeSequence(self):
@@ -950,7 +1075,7 @@ class ProcessEndpointTransportTests(unittest.TestCase):
         of string passed to it to the transport's stdin.
         """
         self.endpointTransport.writeSequence(['test1', 'test2', 'test3'])
-        self.assertEqual(self.process.dataList, ['test1', 'test2', 'test3'])
+        self.assertEqual(self.process.io.getvalue(), 'test1test2test3')
 
 
     def test_write(self):
@@ -959,7 +1084,7 @@ class ProcessEndpointTransportTests(unittest.TestCase):
         data passed to it to the child process's stdin.
         """
         self.endpointTransport.write('test')
-        self.assertEqual(self.process.dataList.pop(), 'test')
+        self.assertEqual(self.process.io.getvalue(), 'test')
 
 
     def test_loseConnection(self):
@@ -968,7 +1093,7 @@ class ProcessEndpointTransportTests(unittest.TestCase):
         instance returns a call to the process transport's loseConnection.
         """
         self.endpointTransport.loseConnection()
-        self.assertEqual(self.process.loseConnectionFlag, True)
+        self.assertEqual(self.process.connected, False)
 
 
     def test_getHost(self):
@@ -978,7 +1103,7 @@ class ProcessEndpointTransportTests(unittest.TestCase):
         """
         host = self.endpointTransport.getHost()
         self.assertIsInstance(host, _ProcessAddress)
-        self.assertIs(host, self.process.host)
+        self.assertIs(host, self.process.getHost())
 
 
     def test_getPeer(self):
@@ -988,7 +1113,7 @@ class ProcessEndpointTransportTests(unittest.TestCase):
         """
         peer = self.endpointTransport.getPeer()
         self.assertIsInstance(peer, _ProcessAddress)
-        self.assertIs(peer, self.process.peer)
+        self.assertIs(peer, self.process.getPeer())
 
 
 
@@ -1439,7 +1564,7 @@ class TCP6EndpointNameResolutionTestCase(ClientEndpointTestCaseMixin,
 
 class RaisingMemoryReactorWithClock(RaisingMemoryReactor, Clock):
     """
-    An extention of L{RaisingMemoryReactor} with L{task.Clock}.
+    An extension of L{RaisingMemoryReactor} with L{task.Clock}.
     """
     def __init__(self, listenException=None, connectException=None):
         Clock.__init__(self)
@@ -2383,6 +2508,9 @@ class ServerStringTests(unittest.TestCase):
         self.assertEqual(server._backlog, 50)
         self.assertEqual(server._interface, "")
         self.assertEqual(server._sslContextFactory.method, SSLv23_METHOD)
+        self.assertTrue(
+            server._sslContextFactory._options & OP_NO_SSLv3,
+        )
         ctx = server._sslContextFactory.getContext()
         self.assertIsInstance(ctx, ContextType)
 
@@ -2781,6 +2909,8 @@ class SSLClientStringTests(unittest.TestCase):
         self.assertEqual(client._bindAddress, (b"10.0.0.3", 0))
         certOptions = client._sslContextFactory
         self.assertIsInstance(certOptions, CertificateOptions)
+        self.assertEqual(certOptions.method, SSLv23_METHOD)
+        self.assertTrue(certOptions._options & OP_NO_SSLv3)
         ctx = certOptions.getContext()
         self.assertIsInstance(ctx, ContextType)
         self.assertEqual(Certificate(certOptions.certificate), testCertificate)
@@ -3222,4 +3352,5 @@ if _PY3:
          AdoptedStreamServerEndpointTestCase, SystemdEndpointPluginTests,
          TCP6ServerEndpointPluginTests, StandardIOEndpointPluginTests,
          ProcessEndpointsTestCase, WrappedIProtocolTests,
+         ProcessEndpointTransportTests,
          )

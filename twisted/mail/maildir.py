@@ -695,7 +695,7 @@ class StringListMailbox:
             the mailbox.
         """
         if i is None:
-            return [self.listMessages(i) for i in range(len(self.msgs))]
+            return [self.listMessages(msg) for msg in range(len(self.msgs))]
         if i in self._delete:
             return 0
         return len(self.msgs[i])
@@ -862,7 +862,7 @@ class MaildirDirdbmDomain(AbstractMaildirDomain):
         The mailbox for the authenticated user will be returned only if the
         given interfaces include L{IMailbox <pop3.IMailbox>}.  Requests for
         anonymous access will be met with a mailbox containing a message
-        indicating that an internal error has occured.
+        indicating that an internal error has occurred.
 
         @type avatarId: L{bytes} or C{twisted.cred.checkers.ANONYMOUS}
         @param avatarId: A string which identifies a user or an object which

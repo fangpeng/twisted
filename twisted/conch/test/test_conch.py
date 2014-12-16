@@ -5,7 +5,7 @@
 import os, sys, socket
 from itertools import count
 
-from zope.interface import implements
+from zope.interface import implementer
 
 from twisted.cred import portal
 from twisted.internet import reactor, defer, protocol
@@ -33,7 +33,7 @@ from twisted.conch.test.keydata import publicDSA_openssh, privateDSA_openssh
 from twisted.conch.test.test_ssh import Crypto, pyasn1
 try:
     from twisted.conch.test.test_ssh import ConchTestServerFactory, \
-        ConchTestPublicKeyChecker
+        conchTestPublicKeyChecker
 except ImportError:
     pass
 
@@ -311,7 +311,7 @@ class ConchServerSetupMixin:
         """
         realm = self.realmFactory()
         p = portal.Portal(realm)
-        p.registerChecker(ConchTestPublicKeyChecker())
+        p.registerChecker(conchTestPublicKeyChecker())
         factory = ConchTestServerFactory()
         factory.portal = p
         return factory
@@ -393,6 +393,11 @@ class ForwardingMixin(ConchServerSetupMixin):
 
 
 
+# Conventionally there is a separate adapter object which provides ISession for
+# the user, but making the user provide ISession directly works too. This isn't
+# a full implementation of ISession though, just enough to make these tests
+# pass.
+@implementer(ISession)
 class RekeyAvatar(ConchUser):
     """
     This avatar implements a shell which sends 60 numbered lines to whatever
@@ -401,12 +406,6 @@ class RekeyAvatar(ConchUser):
     60 lines is selected as being enough to send more than 2kB of traffic, the
     amount the client is configured to initiate a rekey after.
     """
-    # Conventionally there is a separate adapter object which provides ISession
-    # for the user, but making the user provide ISession directly works too.
-    # This isn't a full implementation of ISession though, just enough to make
-    # these tests pass.
-    implements(ISession)
-
     def __init__(self):
         ConchUser.__init__(self)
         self.channelLookup['session'] = SSHSession
@@ -518,7 +517,7 @@ class OpenSSHClientMixin:
 
 
 
-class OpenSSHClientForwardingTestCase(ForwardingMixin, OpenSSHClientMixin,
+class OpenSSHClientForwardingTests(ForwardingMixin, OpenSSHClientMixin,
                                       unittest.TestCase):
     """
     Connection forwarding tests run against the OpenSSL command line client.
@@ -526,7 +525,7 @@ class OpenSSHClientForwardingTestCase(ForwardingMixin, OpenSSHClientMixin,
 
 
 
-class OpenSSHClientRekeyTestCase(RekeyTestsMixin, OpenSSHClientMixin,
+class OpenSSHClientRekeyTests(RekeyTestsMixin, OpenSSHClientMixin,
                                  unittest.TestCase):
     """
     Rekeying tests run against the OpenSSL command line client.
@@ -534,7 +533,7 @@ class OpenSSHClientRekeyTestCase(RekeyTestsMixin, OpenSSHClientMixin,
 
 
 
-class CmdLineClientTestCase(ForwardingMixin, unittest.TestCase):
+class CmdLineClientTests(ForwardingMixin, unittest.TestCase):
     """
     Connection forwarding tests run against the Conch command line client.
     """

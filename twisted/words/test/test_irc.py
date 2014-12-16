@@ -498,7 +498,7 @@ stringSubjects = [
     ]
 
 
-class QuotingTest(unittest.TestCase):
+class QuotingTests(unittest.TestCase):
     def test_lowquoteSanity(self):
         """
         Testing client-server level quote/dequote.
@@ -634,7 +634,7 @@ class ServerSupportedFeatureTests(unittest.TestCase):
     def test_splitParamArgsProcessor(self):
         """
         L{ServerSupportedFeatures._splitParamArgs} uses the argument processor
-        passed to to convert ISUPPORT argument values to some more suitable
+        passed to convert ISUPPORT argument values to some more suitable
         form.
         """
         res = irc.ServerSupportedFeatures._splitParamArgs(['A:1', 'B:2', 'C'],
@@ -1009,7 +1009,7 @@ class IRCClientWithoutLogin(irc.IRCClient):
 
 
 
-class CTCPTest(unittest.TestCase):
+class CTCPTests(unittest.TestCase):
     """
     Tests for L{twisted.words.protocols.irc.IRCClient} CTCP handling.
     """
@@ -1623,7 +1623,7 @@ class ClientImplementationTests(unittest.TestCase):
 
 
 
-class BasicServerFunctionalityTestCase(unittest.TestCase):
+class BasicServerFunctionalityTests(unittest.TestCase):
     def setUp(self):
         self.f = StringIOWithoutClosing()
         self.t = protocol.FileWrapper(self.f)
@@ -1638,7 +1638,7 @@ class BasicServerFunctionalityTestCase(unittest.TestCase):
     def test_sendMessage(self):
         """
         Passing a command and parameters to L{IRC.sendMessage} results in a
-        query string that consists of the command and parameters, seperated by
+        query string that consists of the command and parameters, separated by
         a space, ending with '\r\n'.
         """
         self.p.sendMessage('CMD', 'param1', 'param2')
@@ -2277,6 +2277,15 @@ class DccTests(unittest.TestCase):
             ['foo.txt', '127.0.0.1', '1025']))])
 
 
+    def test_dccSendNotImplemented(self):
+        """
+        L{irc.IRCClient.dccDoSend} is raises C{NotImplementedError}
+        """
+        client = irc.IRCClient()
+        self.assertRaises(NotImplementedError,
+                          client.dccSend, 'username', None)
+
+
     def test_dccSendMalformedRequest(self):
         """
         L{irc.IRCClient.dcc_SEND} raises L{irc.IRCBadMessage} when it is passed
@@ -2379,7 +2388,7 @@ class DccTests(unittest.TestCase):
 
 
 
-class TestServerToClient(TestCase):
+class ServerToClientTests(TestCase):
     """
     Tests for the C{irc_*} methods sent from the server to the client.
     """
@@ -2488,7 +2497,7 @@ class TestServerToClient(TestCase):
 
 
 
-class TestCTCPQuery(TestCase):
+class CTCPQueryTests(TestCase):
     """
     Tests for the C{ctcpQuery_*} methods.
     """

@@ -14,7 +14,7 @@ from zope.interface import implementer
 
 from twisted.trial import unittest
 
-from twisted.python.log import msg
+from twisted.python.log import msg, err
 from twisted.internet import protocol, reactor, defer, interfaces
 from twisted.internet import error
 from twisted.internet.address import IPv4Address
@@ -368,15 +368,6 @@ class ListeningTestCase(unittest.TestCase):
         self.assertRaises(RuntimeError, port.connectionLost, None)
 
 
-
-def callWithSpew(f):
-    from twisted.python.util import spewerWithLinenums as spewer
-    import sys
-    sys.settrace(spewer)
-    try:
-        f()
-    finally:
-        sys.settrace(None)
 
 class LoopbackTestCase(unittest.TestCase):
     """
@@ -1202,12 +1193,16 @@ class ProperlyCloseFilesMixin:
             cleaned up.
             """
             client, server = result
-            client.lostConnectionReason.trap(error.ConnectionClosed)
-            server.lostConnectionReason.trap(error.ConnectionClosed)
+            if not client.lostConnectionReason.check(error.ConnectionClosed):
+                err(client.lostConnectionReason,
+                    "Client lost connection for unexpected reason")
+            if not server.lostConnectionReason.check(error.ConnectionClosed):
+                err(server.lostConnectionReason,
+                    "Server lost connection for unexpected reason")
             expectedErrorCode = self.getHandleErrorCode()
-            err = self.assertRaises(
+            exception = self.assertRaises(
                 self.getHandleExceptionType(), client.handle.send, b'bytes')
-            self.assertEqual(err.args[0], expectedErrorCode)
+            self.assertEqual(exception.args[0], expectedErrorCode)
         clientDeferred.addCallback(clientDisconnected)
 
         def cleanup(passthrough):

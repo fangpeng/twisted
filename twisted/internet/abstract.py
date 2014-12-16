@@ -14,7 +14,7 @@ from zope.interface import implementer
 
 # Twisted Imports
 from twisted.python.compat import _PY3, unicode, lazyByteSlice
-from twisted.python import _reflectpy3 as reflect, failure
+from twisted.python import reflect, failure
 from twisted.internet import interfaces, main
 
 if _PY3:
@@ -40,7 +40,7 @@ class _ConsumerMixin(object):
     Subclasses must provide three attributes which L{_ConsumerMixin} will read
     but not write:
 
-      - connected: A C{bool} which is C{True} as long as the the consumer has
+      - connected: A C{bool} which is C{True} as long as the consumer has
         someplace to send bytes (for example, a TCP connection), and then
         C{False} when it no longer does.
 
